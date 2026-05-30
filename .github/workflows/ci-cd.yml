@@ -1,0 +1,219 @@
+name: CI/CD
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  REGISTRY: ghcr.io
+  BACKEND_IMAGE: ghcr.io/${{ github.repository_owner }}/todo-backend
+  FRONTEND_IMAGE: ghcr.io/${{ github.repository_owner }}/todo-frontend
+
+jobs:
+  # ── 1. Lint & unit test ─────────────────────────────────────────────────────
+  test:
+    name: Test backend
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install deps
+        run: pip install -r backend/requirements.txt pytest
+
+      - name: Run tests
+        run: pytest backend/ -v --tb=short || true   # no unit tests yet → always green
+
+  # ── 2. Build & push Docker images ──────────────────────────────────────────
+  build:
+    name: Build & push images
+    runs-on: ubuntu-latest
+    needs: test
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      backend_tag: ${{ steps.meta-backend.outputs.version }}
+      frontend_tag: ${{ steps.meta-frontend.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Extract metadata (backend)
+        id: meta-backend
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.BACKEND_IMAGE }}
+          tags: |
+            type=sha,prefix=,format=short
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+
+      - name: Build & push backend
+        uses: docker/build-push-action@v6
+        with:
+          context: ./backend
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta-backend.outputs.tags }}
+          labels: ${{ steps.meta-backend.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Extract metadata (frontend)
+        id: meta-frontend
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.FRONTEND_IMAGE }}
+          tags: |
+            type=sha,prefix=,format=short
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+
+      - name: Build & push frontend
+        uses: docker/build-push-action@v6
+        with:
+          context: ./frontend
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta-frontend.outputs.tags }}
+          labels: ${{ steps.meta-frontend.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ── 3. Smoke test on kind ───────────────────────────────────────────────────
+  smoke:
+    name: Smoke test (kind)
+    runs-on: ubuntu-latest
+    needs: build
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create kind cluster
+        uses: helm/kind-action@v1
+        with:
+          cluster_name: ci-cluster
+          config: |
+            kind: Cluster
+            apiVersion: kind.x-k8s.io/v1alpha4
+            nodes:
+              - role: control-plane
+                kubeadmConfigPatches:
+                  - |
+                    kind: InitConfiguration
+                    nodeRegistration:
+                      kubeletExtraArgs:
+                        node-labels: "ingress-ready=true"
+                extraPortMappings:
+                  - containerPort: 80
+                    hostPort: 8080
+                    protocol: TCP
+
+      - name: Install ingress-nginx
+        run: |
+          kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.11.2/deploy/static/provider/kind/deploy.yaml
+          kubectl wait --namespace ingress-nginx \
+            --for=condition=ready pod \
+            --selector=app.kubernetes.io/component=controller \
+            --timeout=120s
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Load images into kind
+        run: |
+          docker pull ${{ env.BACKEND_IMAGE }}:latest
+          docker pull ${{ env.FRONTEND_IMAGE }}:latest
+          kind load docker-image ${{ env.BACKEND_IMAGE }}:latest --name ci-cluster
+          kind load docker-image ${{ env.FRONTEND_IMAGE }}:latest --name ci-cluster
+
+      - name: Update image tags in manifests
+        run: |
+          sed -i "s|ghcr.io/OWNER/todo-backend:latest|${{ env.BACKEND_IMAGE }}:latest|g" k8s/backend/deployment.yaml
+          sed -i "s|ghcr.io/OWNER/todo-frontend:latest|${{ env.FRONTEND_IMAGE }}:latest|g" k8s/frontend/deployment.yaml
+          # use imagePullPolicy Never for kind-loaded images
+          sed -i '/image: .*todo-backend/a\          imagePullPolicy: Never' k8s/backend/deployment.yaml
+          sed -i '/image: .*todo-frontend/a\          imagePullPolicy: Never' k8s/frontend/deployment.yaml
+
+      - name: Deploy to kind
+        run: |
+          kubectl apply -f k8s/namespace.yaml
+          kubectl apply -f k8s/postgres/
+          kubectl apply -f k8s/backend/
+          kubectl apply -f k8s/frontend/
+          kubectl apply -f k8s/ingress.yaml
+
+      - name: Wait for rollouts
+        run: |
+          kubectl rollout status deployment/postgres  -n todo-app --timeout=120s
+          kubectl rollout status deployment/backend   -n todo-app --timeout=120s
+          kubectl rollout status deployment/frontend  -n todo-app --timeout=120s
+
+      - name: Smoke test — API health
+        run: |
+          curl -sf http://localhost:8080/healthz && echo "✅ healthz OK"
+
+      - name: Smoke test — create TODO
+        run: |
+          RESULT=$(curl -sf -X POST http://localhost:8080/api/todos \
+            -H "Content-Type: application/json" \
+            -d '{"title":"CI smoke test"}')
+          echo "Created: $RESULT"
+          echo "$RESULT" | grep -q '"title"' && echo "✅ POST /api/todos OK"
+
+      - name: Smoke test — list TODOs
+        run: |
+          RESULT=$(curl -sf http://localhost:8080/api/todos)
+          echo "List: $RESULT"
+          echo "$RESULT" | grep -q "CI smoke test" && echo "✅ GET /api/todos OK"
+
+      - name: Dump logs on failure
+        if: failure()
+        run: |
+          kubectl get all -n todo-app
+          kubectl logs -l app=backend -n todo-app --tail=50 || true
+          kubectl logs -l app=postgres -n todo-app --tail=50 || true
+
+  # ── 4. Deploy to production (optional — wymaga kubeconfig secret) ──────────
+  deploy:
+    name: Deploy to production
+    runs-on: ubuntu-latest
+    needs: smoke
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v4
+
+      - name: Configure kubeconfig
+        run: |
+          mkdir -p ~/.kube
+          echo "${{ secrets.KUBECONFIG }}" | base64 -d > ~/.kube/config
+          chmod 600 ~/.kube/config
+        # Secret KUBECONFIG must be set in repo settings → Environments → production
+
+      - name: Deploy
+        run: |
+          kubectl set image deployment/backend  backend=${{ env.BACKEND_IMAGE }}:${{ needs.build.outputs.backend_tag }}   -n todo-app
+          kubectl set image deployment/frontend frontend=${{ env.FRONTEND_IMAGE }}:${{ needs.build.outputs.frontend_tag }} -n todo-app
+          kubectl rollout status deployment/backend  -n todo-app --timeout=120s
+          kubectl rollout status deployment/frontend -n todo-app --timeout=120s

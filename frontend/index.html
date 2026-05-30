@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TODO App — Kubernetes</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: system-ui, sans-serif; background: #f0f4f8; min-height: 100vh; display: flex; justify-content: center; padding: 2rem; }
+  .container { width: 100%; max-width: 600px; }
+  h1 { text-align: center; color: #1a202c; margin-bottom: 1.5rem; font-size: 1.8rem; }
+  .badge { display: inline-block; background: #4299e1; color: white; font-size: 0.7rem; padding: 2px 8px; border-radius: 9999px; vertical-align: middle; margin-left: 0.5rem; }
+  .form { display: flex; gap: 0.5rem; margin-bottom: 1.5rem; }
+  .form input { flex: 1; padding: 0.6rem 1rem; border: 1px solid #cbd5e0; border-radius: 6px; font-size: 1rem; }
+  .form button { padding: 0.6rem 1.2rem; background: #4299e1; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 1rem; }
+  .form button:hover { background: #3182ce; }
+  .list { list-style: none; display: flex; flex-direction: column; gap: 0.5rem; }
+  .item { display: flex; align-items: center; gap: 0.75rem; background: white; padding: 0.75rem 1rem; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+  .item input[type=checkbox] { width: 1.2rem; height: 1.2rem; cursor: pointer; }
+  .item span { flex: 1; font-size: 1rem; }
+  .item span.done { text-decoration: line-through; color: #a0aec0; }
+  .item button { background: none; border: none; color: #e53e3e; cursor: pointer; font-size: 1.2rem; line-height: 1; }
+  .empty { text-align: center; color: #a0aec0; padding: 2rem; }
+  .error { color: #e53e3e; text-align: center; margin-bottom: 1rem; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>TODO App <span class="badge">☸ Kubernetes</span></h1>
+  <div id="error" class="error" style="display:none"></div>
+  <div class="form">
+    <input id="newTodo" type="text" placeholder="Nowe zadanie…" />
+    <button onclick="addTodo()">Dodaj</button>
+  </div>
+  <ul id="list" class="list"></ul>
+  <p id="empty" class="empty" style="display:none">Brak zadań. Dodaj pierwsze!</p>
+</div>
+
+<script>
+const API = '/api/todos';
+
+async function apiFetch(url, opts = {}) {
+  const res = await fetch(url, { headers: { 'Content-Type': 'application/json' }, ...opts });
+  if (!res.ok && res.status !== 204) throw new Error(`HTTP ${res.status}`);
+  return res.status === 204 ? null : res.json();
+}
+
+function showError(msg) {
+  const el = document.getElementById('error');
+  el.textContent = msg;
+  el.style.display = msg ? '' : 'none';
+}
+
+async function load() {
+  try {
+    const todos = await apiFetch(API);
+    render(todos);
+    showError('');
+  } catch(e) { showError('Nie można załadować zadań: ' + e.message); }
+}
+
+function render(todos) {
+  const list = document.getElementById('list');
+  const empty = document.getElementById('empty');
+  list.innerHTML = '';
+  if (!todos.length) { empty.style.display = ''; return; }
+  empty.style.display = 'none';
+  todos.forEach(t => {
+    const li = document.createElement('li');
+    li.className = 'item';
+    li.innerHTML = `
+      <input type="checkbox" ${t.done ? 'checked' : ''} onchange="toggle(${t.id}, this.checked)" />
+      <span class="${t.done ? 'done' : ''}">${escHtml(t.title)}</span>
+      <button onclick="remove(${t.id})" title="Usuń">×</button>`;
+    list.appendChild(li);
+  });
+}
+
+function escHtml(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+async function addTodo() {
+  const input = document.getElementById('newTodo');
+  const title = input.value.trim();
+  if (!title) return;
+  try {
+    await apiFetch(API, { method: 'POST', body: JSON.stringify({ title }) });
+    input.value = '';
+    load();
+  } catch(e) { showError('Błąd dodawania: ' + e.message); }
+}
+
+async function toggle(id, done) {
+  try {
+    await apiFetch(`${API}/${id}`, { method: 'PATCH', body: JSON.stringify({ done }) });
+    load();
+  } catch(e) { showError('Błąd aktualizacji: ' + e.message); }
+}
+
+async function remove(id) {
+  try {
+    await apiFetch(`${API}/${id}`, { method: 'DELETE' });
+    load();
+  } catch(e) { showError('Błąd usuwania: ' + e.message); }
+}
+
+document.getElementById('newTodo').addEventListener('keypress', e => { if (e.key === 'Enter') addTodo(); });
+
+load();
+</script>
+</body>
+</html>
