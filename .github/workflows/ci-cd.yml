@@ -8,8 +8,6 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  BACKEND_IMAGE: ghcr.io/${{ github.repository_owner }}/todo-backend
-  FRONTEND_IMAGE: ghcr.io/${{ github.repository_owner }}/todo-frontend
 
 jobs:
   # ── 1. Lint & unit test ─────────────────────────────────────────────────────
@@ -29,7 +27,7 @@ jobs:
         run: pip install -r backend/requirements.txt pytest
 
       - name: Run tests
-        run: pytest backend/ -v --tb=short || true   # no unit tests yet → always green
+        run: pytest backend/ -v --tb=short || true
 
   # ── 2. Build & push Docker images ──────────────────────────────────────────
   build:
@@ -42,8 +40,17 @@ jobs:
     outputs:
       backend_tag: ${{ steps.meta-backend.outputs.version }}
       frontend_tag: ${{ steps.meta-frontend.outputs.version }}
+      backend_image: ${{ steps.set-images.outputs.backend_image }}
+      frontend_image: ${{ steps.set-images.outputs.frontend_image }}
     steps:
       - uses: actions/checkout@v4
+
+      - name: Set lowercase image names
+        id: set-images
+        run: |
+          OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          echo "backend_image=ghcr.io/$OWNER/todo-backend"  >> $GITHUB_OUTPUT
+          echo "frontend_image=ghcr.io/$OWNER/todo-frontend" >> $GITHUB_OUTPUT
 
       - name: Log in to GHCR
         uses: docker/login-action@v3
@@ -59,7 +66,7 @@ jobs:
         id: meta-backend
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.BACKEND_IMAGE }}
+          images: ${{ steps.set-images.outputs.backend_image }}
           tags: |
             type=sha,prefix=,format=short
             type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
@@ -78,7 +85,7 @@ jobs:
         id: meta-frontend
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.FRONTEND_IMAGE }}
+          images: ${{ steps.set-images.outputs.frontend_image }}
           tags: |
             type=sha,prefix=,format=short
             type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
@@ -99,6 +106,9 @@ jobs:
     runs-on: ubuntu-latest
     needs: build
     if: github.ref == 'refs/heads/main'
+    env:
+      BACKEND_IMAGE: ${{ needs.build.outputs.backend_image }}
+      FRONTEND_IMAGE: ${{ needs.build.outputs.frontend_image }}
     steps:
       - uses: actions/checkout@v4
 
@@ -153,7 +163,6 @@ jobs:
         run: |
           sed -i "s|ghcr.io/OWNER/todo-backend:latest|${{ env.BACKEND_IMAGE }}:latest|g" k8s/backend/deployment.yaml
           sed -i "s|ghcr.io/OWNER/todo-frontend:latest|${{ env.FRONTEND_IMAGE }}:latest|g" k8s/frontend/deployment.yaml
-          # use imagePullPolicy Never for kind-loaded images
           sed -i '/image: .*todo-backend/a\          imagePullPolicy: Never' k8s/backend/deployment.yaml
           sed -i '/image: .*todo-frontend/a\          imagePullPolicy: Never' k8s/frontend/deployment.yaml
 
@@ -173,7 +182,7 @@ jobs:
 
       - name: Smoke test — API health
         run: |
-          curl -sf http://localhost:8080/healthz && echo " healthz OK"
+          curl -sf http://localhost:8080/healthz && echo "healthz OK"
 
       - name: Smoke test — create TODO
         run: |
@@ -181,13 +190,13 @@ jobs:
             -H "Content-Type: application/json" \
             -d '{"title":"CI smoke test"}')
           echo "Created: $RESULT"
-          echo "$RESULT" | grep -q '"title"' && echo " POST /api/todos OK"
+          echo "$RESULT" | grep -q '"title"' && echo "POST /api/todos OK"
 
       - name: Smoke test — list TODOs
         run: |
           RESULT=$(curl -sf http://localhost:8080/api/todos)
           echo "List: $RESULT"
-          echo "$RESULT" | grep -q "CI smoke test" && echo " GET /api/todos OK"
+          echo "$RESULT" | grep -q "CI smoke test" && echo "GET /api/todos OK"
 
       - name: Dump logs on failure
         if: failure()
@@ -200,9 +209,12 @@ jobs:
   deploy:
     name: Deploy to production
     runs-on: ubuntu-latest
-    needs: smoke
+    needs: [build, smoke]
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     environment: production
+    env:
+      BACKEND_IMAGE: ${{ needs.build.outputs.backend_image }}
+      FRONTEND_IMAGE: ${{ needs.build.outputs.frontend_image }}
     steps:
       - uses: actions/checkout@v4
 
@@ -214,7 +226,6 @@ jobs:
           mkdir -p ~/.kube
           echo "${{ secrets.KUBECONFIG }}" | base64 -d > ~/.kube/config
           chmod 600 ~/.kube/config
-        # Secret KUBECONFIG must be set in repo settings → Environments → production
 
       - name: Deploy
         run: |
