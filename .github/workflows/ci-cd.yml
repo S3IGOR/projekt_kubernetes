@@ -180,17 +180,46 @@ jobs:
           kubectl rollout status deployment/backend   -n todo-app --timeout=180s
           kubectl rollout status deployment/frontend  -n todo-app --timeout=180s
 
+      - name: Wait for ingress to be programmed
+        run: |
+          # rollout status only waits for pods, not for the ingress controller
+          # to reconcile the Ingress resource. Poll /healthz until it answers.
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:8080/healthz >/dev/null; then
+              echo "Ingress ready after ${i} attempt(s)"
+              exit 0
+            fi
+            echo "waiting for ingress… ($i/30)"
+            sleep 4
+          done
+          echo "::error::ingress never became ready"
+          exit 1
+
       - name: Smoke test — API health
         run: |
           curl -sf http://localhost:8080/healthz && echo "healthz OK"
 
       - name: Smoke test — create TODO
         run: |
-          RESULT=$(curl -sf -X POST http://localhost:8080/api/todos \
+          # retry: backend may still be warming up / ingress route settling
+          for i in $(seq 1 15); do
+            CODE=$(curl -s -o /tmp/post.json -w '%{http_code}' \
+              -X POST http://localhost:8080/api/todos \
+              -H "Content-Type: application/json" \
+              -d '{"title":"CI smoke test"}')
+            echo "attempt $i → HTTP $CODE"
+            cat /tmp/post.json; echo
+            if [ "$CODE" = "201" ]; then
+              grep -q '"title"' /tmp/post.json && echo "POST /api/todos OK" && exit 0
+            fi
+            sleep 3
+          done
+          echo "::error::POST /api/todos never returned 201"
+          echo "--- verbose request ---"
+          curl -v -X POST http://localhost:8080/api/todos \
             -H "Content-Type: application/json" \
-            -d '{"title":"CI smoke test"}')
-          echo "Created: $RESULT"
-          echo "$RESULT" | grep -q '"title"' && echo "POST /api/todos OK"
+            -d '{"title":"debug"}' || true
+          exit 1
 
       - name: Smoke test — list TODOs
         run: |
@@ -198,12 +227,20 @@ jobs:
           echo "List: $RESULT"
           echo "$RESULT" | grep -q "CI smoke test" && echo "GET /api/todos OK"
 
-      - name: Dump logs on failure
+      - name: Dump diagnostics on failure
         if: failure()
         run: |
+          echo "=== pods/services ==="
           kubectl get all -n todo-app
-          kubectl logs -l app=backend -n todo-app --tail=50 || true
-          kubectl logs -l app=postgres -n todo-app --tail=50 || true
+          echo "=== ingress ==="
+          kubectl get ingress -n todo-app -o wide
+          kubectl describe ingress -n todo-app
+          echo "=== backend logs ==="
+          kubectl logs -l app=backend -n todo-app --tail=80 || true
+          echo "=== ingress-controller logs ==="
+          kubectl logs -n ingress-nginx -l app.kubernetes.io/component=controller --tail=80 || true
+          echo "=== postgres logs ==="
+          kubectl logs -l app=postgres -n todo-app --tail=40 || true
 
   # ── 4. Deploy to production (optional — wymaga kubeconfig secret) ──────────
   deploy:
