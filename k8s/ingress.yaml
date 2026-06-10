@@ -6,16 +6,8 @@ metadata:
 spec:
   ingressClassName: nginx
   rules:
-    - host: todo.local
-      http:
+    - http:
         paths:
-          - path: /
-            pathType: Prefix
-            backend:
-              service:
-                name: frontend
-                port:
-                  number: 80
           - path: /api
             pathType: Prefix
             backend:
@@ -23,3 +15,10 @@ spec:
                 name: backend
                 port:
                   number: 8080
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: frontend
+                port:
+                  number: 80
