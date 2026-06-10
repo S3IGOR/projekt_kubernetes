@@ -242,29 +242,46 @@ jobs:
           echo "=== postgres logs ==="
           kubectl logs -l app=postgres -n todo-app --tail=40 || true
 
-  # ── 4. Deploy to production (optional — wymaga kubeconfig secret) ──────────
+  # ── 4. Deploy to production (opcjonalny — uruchamia się tylko gdy ustawiono
+  #       sekret KUBECONFIG wskazujący na prawdziwy klaster produkcyjny) ───────
   deploy:
     name: Deploy to production
     runs-on: ubuntu-latest
     needs: [build, smoke]
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-    environment: production
     env:
       BACKEND_IMAGE: ${{ needs.build.outputs.backend_image }}
       FRONTEND_IMAGE: ${{ needs.build.outputs.frontend_image }}
     steps:
       - uses: actions/checkout@v4
 
+      - name: Check for KUBECONFIG secret
+        id: check
+        env:
+          KUBECONFIG_B64: ${{ secrets.KUBECONFIG }}
+        run: |
+          if [ -z "$KUBECONFIG_B64" ]; then
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Brak sekretu KUBECONFIG — pomijam deploy na produkcję. (Aplikacja została już wdrożona i przetestowana w jobie smoke na kind.)"
+          else
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Set up kubectl
+        if: steps.check.outputs.present == 'true'
         uses: azure/setup-kubectl@v4
 
       - name: Configure kubeconfig
+        if: steps.check.outputs.present == 'true'
+        env:
+          KUBECONFIG_B64: ${{ secrets.KUBECONFIG }}
         run: |
           mkdir -p ~/.kube
-          echo "${{ secrets.KUBECONFIG }}" | base64 -d > ~/.kube/config
+          echo "$KUBECONFIG_B64" | base64 -d > ~/.kube/config
           chmod 600 ~/.kube/config
 
       - name: Deploy
+        if: steps.check.outputs.present == 'true'
         run: |
           kubectl set image deployment/backend  backend=${{ env.BACKEND_IMAGE }}:${{ needs.build.outputs.backend_tag }}   -n todo-app
           kubectl set image deployment/frontend frontend=${{ env.FRONTEND_IMAGE }}:${{ needs.build.outputs.frontend_tag }} -n todo-app
