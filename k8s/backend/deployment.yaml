@@ -23,7 +23,8 @@ spec:
           type: RuntimeDefault
       containers:
         - name: backend
-          image: ghcr.io/OWNER/todo-backend:latest
+          image: ghcr.io/s3igor/todo-backend:latest
+          imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8080
           env:

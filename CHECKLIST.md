@@ -10,7 +10,6 @@ Pipeline CI/CD: **GitHub Actions** (build → smoke test na kind → opcjonalny 
 ## 0. Wymagania wstępne
 
 | Narzędzie | Minimalna wersja | Instalacja |
-|-----------|-----------------|------------|
 | Docker | 24+ | https://docs.docker.com/get-docker/ |
 | kind **lub** minikube **lub** k3d | kind ≥ 0.23 | patrz sekcja 1 |
 | kubectl | 1.29+ | https://kubernetes.io/docs/tasks/tools/ |
@@ -100,8 +99,7 @@ k3d cluster create todo -p "8080:80@loadbalancer"
 ## 3. Budowanie obrazów (lokalnie)
 
 ```bash
-# Podmień YOUR_GITHUB_USER na swój login GitHub
-export OWNER=YOUR_GITHUB_USER
+export OWNER=S3IGOR
 
 docker build -t ghcr.io/$OWNER/todo-backend:latest  ./backend
 docker build -t ghcr.io/$OWNER/todo-frontend:latest ./frontend
@@ -113,17 +111,16 @@ kind load docker-image ghcr.io/$OWNER/todo-frontend:latest --name todo
 
 ---
 
-## 4. Podmień OWNER w manifestach i wdróż
+## 4. manifest i wdróżenie
 
 ```bash
-export OWNER=YOUR_GITHUB_USER
+export OWNER=S3IGOR
 
 sed -i "s|ghcr.io/OWNER/|ghcr.io/$OWNER/|g" \
   k8s/backend/deployment.yaml \
   k8s/frontend/deployment.yaml
 
 # Dodaj imagePullPolicy: Never dla obrazów załadowanych lokalnie do kind
-# (pomiń krok poniżej jeśli używasz minikube/k3d z publicznym rejestrem)
 kubectl patch deployment backend -n todo-app --type=json \
   -p='[{"op":"add","path":"/spec/template/spec/containers/0/imagePullPolicy","value":"Never"}]' \
   2>/dev/null || true
@@ -246,7 +243,7 @@ echo "Otwórz: http://localhost:8080"
 1. Stwórz repozytorium na GitHub i wypchnij kod:
 
    ```bash
-   git remote add origin https://github.com/YOUR_GITHUB_USER/projekt_kubernetes.git
+   git remote add origin https://github.com/S3IGOR/projekt_kubernetes.git
    git push -u origin main
    ```
 
@@ -255,7 +252,6 @@ echo "Otwórz: http://localhost:8080"
 ### Etapy pipeline
 
 | Job | Opis |
-|-----|------|
 | `test` | Instalacja zależności Python, uruchomienie pytest |
 | `build` | Build i push obrazów Docker do GHCR (ghcr.io) |
 | `smoke` | Klaster kind w CI, deploy, testy HTTP API |
@@ -267,7 +263,7 @@ echo "Otwórz: http://localhost:8080"
 > *(Link aktywny po wypchnięciu repo i uruchomieniu pipeline)*
 
 Bezpośredni URL po skonfigurowaniu repo:  
-`https://github.com/YOUR_GITHUB_USER/projekt_kubernetes/actions/workflows/ci-cd.yml`
+`https://github.com/S3IGOR/projekt_kubernetes/actions/workflows/ci-cd.yml`
 
 ---
 
@@ -289,7 +285,7 @@ k3d cluster delete todo
 
 ---
 
-## 10. Szybka lista kontrolna dla sprawdzającego ✅
+## 10. Szybka lista kontrolna
 
 - [ ] `kubectl get all -n todo-app` — 5 podów Running
 - [ ] `kubectl get pvc -n todo-app` — STATUS = Bound

@@ -163,8 +163,7 @@ jobs:
         run: |
           sed -i "s|ghcr.io/OWNER/todo-backend:latest|${{ env.BACKEND_IMAGE }}:latest|g" k8s/backend/deployment.yaml
           sed -i "s|ghcr.io/OWNER/todo-frontend:latest|${{ env.FRONTEND_IMAGE }}:latest|g" k8s/frontend/deployment.yaml
-          sed -i '/image: .*todo-backend/a\          imagePullPolicy: Never' k8s/backend/deployment.yaml
-          sed -i '/image: .*todo-frontend/a\          imagePullPolicy: Never' k8s/frontend/deployment.yaml
+          # imagePullPolicy: IfNotPresent jest już w manifestach — kind użyje załadowanych obrazów
 
       - name: Deploy to kind
         run: |
