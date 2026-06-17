@@ -297,3 +297,33 @@ k3d cluster delete todo
 - [ ] GitHub Actions — job `smoke` zielony
 - [ ] Obrazy w GHCR (zakładka Packages w repo)
 - [ ] `kubectl describe pod -l app=backend -n todo-app` — liveness/readiness Probes widoczne
+-------------------
+-- zmienne
+kubectl exec -n todo-app deploy/backend -- env
+kubectl describe pod -n todo-app -l app=backend | Select-String "DB_|secret"
+
+
+kind create cluster --name todo --config kind-config.yaml
+
+kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.11.2/deploy/static/provider/kind/deploy.yaml
+
+kubectl wait --namespace ingress-nginx --for=condition=ready pod --selector=app.kubernetes.io/component=controller --timeout=120s
+
+docker build -t ghcr.io/s3igor/todo-backend:latest ./backend
+docker build -t ghcr.io/s3igor/todo-frontend:latest ./frontend
+
+kind load docker-image ghcr.io/s3igor/todo-backend:latest --name todo
+kind load docker-image ghcr.io/s3igor/todo-frontend:latest --name todo
+
+kubectl apply -f k8s/namespace.yaml
+kubectl apply -f k8s/postgres/
+kubectl apply -f k8s/backend/
+kubectl apply -f k8s/frontend/
+kubectl apply -f k8s/ingress.yaml
+
+kubectl get all -n todo-app
+kubectl get pvc -n todo-app
+
+curl.exe http://localhost:8080/healthz
+curl.exe -X POST http://localhost:8080/api/todos -H "Content-Type: application/json" -d '{\"title\":\"test\"}'
+curl.exe http://localhost:8080/api/todos
